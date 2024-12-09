@@ -2,12 +2,45 @@ import streamlit as st
 import pandas as pd
 import joblib
 import numpy as np
+import sqlite3
 
 # Cargar el modelo, scaler, encoder y el transformador UMAP
 model = joblib.load('Neural Network_low_overfitting.joblib')
 scaler = joblib.load('scaler.joblib')
 encoder = joblib.load('encoder.joblib')
 umap_transformer = joblib.load('umap_transformer.joblib')  # Cargar el modelo UMAP
+
+# Conectar a la base de datos SQLite (se crea si no existe)
+conn = sqlite3.connect('clientes_recomendaciones.db')
+c = conn.cursor()
+
+# Crear tablas si no existen
+c.execute('''
+CREATE TABLE IF NOT EXISTS clientes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    region INTEGER,
+    tenure INTEGER,
+    age INTEGER,
+    marital INTEGER,
+    address INTEGER,
+    income REAL,
+    ed INTEGER,
+    employ INTEGER,
+    retire INTEGER,
+    gender INTEGER,
+    reside INTEGER
+)
+''')
+
+c.execute('''
+CREATE TABLE IF NOT EXISTS recomendaciones (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cliente_id INTEGER,
+    servicio_recomendado TEXT,
+    probabilidad REAL,
+    FOREIGN KEY(cliente_id) REFERENCES clientes(id)
+)
+''')
 
 def get_service_name(service_id):
     services = {
@@ -17,6 +50,17 @@ def get_service_name(service_id):
         3: "Servicio Total"
     }
     return services.get(service_id, "Servicio desconocido")  # Manejo de error
+
+def insert_cliente(conn, cliente_data):
+    c = conn.cursor()
+    c.execute("INSERT INTO clientes (region, tenure, age, marital, address, income, ed, employ, retire, gender, reside) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", cliente_data)
+    conn.commit()
+    return c.lastrowid
+
+def insert_recomendacion(conn, cliente_id, servicio_recomendado, probabilidad):
+    c = conn.cursor()
+    c.execute("INSERT INTO recomendaciones (cliente_id, servicio_recomendado, probabilidad) VALUES (?, ?, ?)", (cliente_id, servicio_recomendado, probabilidad))
+    conn.commit()
 
 st.title('Predicción de Servicios')
 
@@ -97,6 +141,13 @@ if st.button('Predecir'):
             # Tomar el primer elemento del primer array
             prediction = prediction_array[0][0]
             service_name = get_service_name(int(prediction))
+            
+            # Guardar datos del cliente en la base de datos
+            cliente_id = insert_cliente(conn, (region, tenure, age, marital, address, income, ed, employ, retire, gender, reside))
+            
+            # Guardar recomendación en la base de datos
+            insert_recomendacion(conn, cliente_id, service_name, 1.0)  # Probabilidad 1.0 para una sola recomendación
+            
             st.write(f"Servicio recomendado: {service_name}")
         
         elif num_recommendations == 2:
@@ -106,14 +157,24 @@ if st.button('Predecir'):
             # Obtener los dos índices con mayores probabilidades
             top_2_indices = np.argsort(probabilities[0])[-2:][::-1]
             
+            # Guardar datos del cliente en la base de datos
+            cliente_id = insert_cliente(conn, (region, tenure, age, marital, address, income, ed, employ, retire, gender, reside))
+            
             st.write(f"Servicios recomendados:")
             for i, service_index in enumerate(top_2_indices, 1):
                 service_name = get_service_name(service_index)
+                probabilidad = probabilities[0][service_index]
                 st.write(f"{i}. {service_name}")
-                st.write(f"   Probabilidad: {probabilities[0][service_index]:.2%}")
+                st.write(f"   Probabilidad: {probabilidad:.2%}")
+                
+                # Guardar recomendación en la base de datos
+                insert_recomendacion(conn, cliente_id, service_name, probabilidad)
     
     except Exception as e:
         st.error(f"Ha ocurrido un error durante la predicción: {e}")
         # Información adicional de depuración
         st.write("Detalles del error:")
         st.write(str(e))
+
+# Cerrar conexión a la base de datos al finalizar el script
+conn.close()
